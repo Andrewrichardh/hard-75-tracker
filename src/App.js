@@ -1,6 +1,20 @@
-import React, { useState, useEffect } from 'react';
+/* global __app_id __initial_auth_token */ // ESLint directive for global variables
+
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Calendar, Clock, Droplets, Target, BookOpen, Footprints, Moon, Sun, CheckCircle2, Circle, TrendingUp, User, LogOut, UserPlus, LogIn } from 'lucide-react';
 
+// Firebase Imports
+import { initializeApp } from 'firebase/app'; // Corrected syntax: changed '=>' to 'from'
+import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
+import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
+import { getAnalytics } from "firebase/analytics";
+
+// --- CUSTOM UI COMPONENTS (REMOVED) ---
+// MagicBento and Folder components have been removed as requested.
+// You can delete src/components/MagicBento.js, src/components/MagicBento.css, and src/components/Folder.js if you wish.
+// --- END CUSTOM UI COMPONENTS ---
+
+// Default daily tasks for new users or resetting
 const defaultDailyTasks = {
   wakeUp4am: false,
   morningJournal: false,
@@ -15,57 +29,107 @@ const defaultDailyTasks = {
 };
 
 const Hard75Tracker = () => {
-  // Authentication states
+  // --- FIREBASE STATE & INITIALIZATION ---
+  const [auth, setAuth] = useState(null);
+  const [db, setDb] = useState(null);
+  const [userId, setUserId] = useState(null); // Firebase User ID
+  const [userEmail, setUserEmail] = useState(null); // Firebase User Email
   const [isAuthenticated, setIsAuthenticated] = useState(false);
-  const [currentUser, setCurrentUser] = useState(null); // Stores the username of the logged-in user
-  const [authMode, setAuthMode] = useState('signin'); // 'signin' or 'signup'
-  const [authForm, setAuthForm] = useState({
-    username: '',
-    password: '',
-    confirmPassword: '',
-    email: ''
-  });
+  const [isFirebaseReady, setIsFirebaseReady] = useState(false); // Tracks if Firebase is initialized and auth state checked
 
-  // In-memory user data storage (mock database)
-  // This object holds all user data, including their daily progress and history
-  const [users, setUsers] = useState({
-    demo1: {
-      email: 'demo1@example.com',
-      password: 'demo123',
-      currentDay: 1,
-      dailyTasks: { ...defaultDailyTasks }, // Use default tasks
-      waterIntake: 0,
-      steps: 0,
-      completedDays: [],
-      dailyHistory: {} // Stores historical data for each completed day
-    },
-    demo2: {
-      email: 'demo2@example.com',
-      password: 'demo123',
-      currentDay: 3,
-      dailyTasks: { ...defaultDailyTasks }, // Use default tasks
-      waterIntake: 1.2,
-      steps: 5000,
-      completedDays: [1, 2],
-      dailyHistory: { // Example history for demo2
-        1: { dailyTasks: { ...defaultDailyTasks, wakeUp4am: true, morningJournal: true, exercise5am: true, water1L: true, noCoffeePhone: true, threeMeals: true, water2to3L: true, walk8k: true, eveningJournal: true, noPhoneAfter8: true }, waterIntake: 2.5, steps: 10000, date: '2024-07-01T12:00:00.000Z' },
-        2: { dailyTasks: { ...defaultDailyTasks, wakeUp4am: true, morningJournal: true, exercise5am: true, water1L: true, noCoffeePhone: true, threeMeals: true, water2to3L: true, walk8k: true, eveningJournal: true, noPhoneAfter8: true }, waterIntake: 3.0, steps: 12000, date: '2024-07-02T12:00:00.000Z' }
-      }
+  // Global variables for Firebase config and app ID (provided by Canvas environment or default)
+  const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-hard75-app';
+  const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+  // IMPORTANT: This is YOUR Firebase Config object from Firebase Console
+  // Wrapped firebaseConfig in useMemo to make its reference stable
+  const firebaseConfig = useMemo(() => ({
+    apiKey: "AIzaSyB53jW0t_iH_eKkp_ag64-9lTL4g6vFR_k",
+    authDomain: "hard75-9af5d.firebaseapp.com",
+    projectId: "hard75-9af5d",
+    storageBucket: "hard75-9af5d.firebasestorage.app",
+    messagingSenderId: "558920238295",
+    appId: "1:558920238295:web:5ac2208f004100e69a1c92",
+    measurementId: "G-N6053L3KP9"
+  }), []); // Empty dependency array means it's created once
+
+  // Initialize Firebase and set up auth listener
+  useEffect(() => {
+    try {
+      const app = initializeApp(firebaseConfig);
+      const authInstance = getAuth(app);
+      const dbInstance = getFirestore(app);
+      // eslint-disable-next-line no-unused-vars
+      const analyticsInstance = getAnalytics(app); // Initialize Analytics, no need to store in a variable if not used directly
+
+      setAuth(authInstance);
+      setDb(dbInstance);
+
+      // Attempt to sign in with custom token or anonymously first
+      const signInInitialUser = async () => {
+        try {
+          // If a custom token is provided (typically in Canvas environment), try to use it.
+          if (initialAuthToken) {
+            await signInWithCustomToken(authInstance, initialAuthToken);
+            console.log("Signed in with custom token.");
+          }
+          // If no custom token was provided OR custom token sign-in failed,
+          // and no user is currently authenticated (e.g., from a persistent session),
+          // attempt anonymous sign-in as a general fallback for web clients.
+          if (!authInstance.currentUser) {
+            await signInAnonymously(authInstance);
+            console.log("Signed in anonymously.");
+          }
+        } catch (error) {
+          console.error("Initial Firebase sign-in attempt failed:", error);
+          showMessage(`Initial sign-in failed: ${error.message}. Please ensure your Firebase project's Authentication providers (Email/Password, Anonymous) are enabled and your API key is correct for web apps. Then try signing up or logging in.`, 'error');
+          setIsFirebaseReady(true); // Unblock UI even if auth fails
+          setIsLoading(false);
+        }
+      };
+      signInInitialUser();
+
+      // Set up authentication state observer
+      const unsubscribe = onAuthStateChanged(authInstance, (user) => {
+        if (user) {
+          setUserId(user.uid);
+          setUserEmail(user.email);
+          setIsAuthenticated(true);
+          console.log("Firebase Auth State Changed: User is authenticated.", user.uid);
+        } else {
+          setUserId(null);
+          setUserEmail(null);
+          setIsAuthenticated(false);
+          console.log("Firebase Auth State Changed: User is NOT authenticated.");
+        }
+        setIsFirebaseReady(true); // Firebase is ready and auth state has been checked
+      });
+
+      // eslint-disable-next-line no-unused-vars
+      return () => unsubscribe(); // Cleanup auth listener on unmount
+    } catch (error) {
+      console.error("Error initializing Firebase:", error);
+      setIsFirebaseReady(true); // Mark ready even on error to unblock UI
+      showMessage(`Firebase initialization failed: ${error.message}`, 'error');
     }
-  });
+  }, [firebaseConfig, initialAuthToken]); // Added firebaseConfig and initialAuthToken to dependencies
 
-  // User-specific progress states (loaded from `users` object)
+  // --- APP STATE (LOADED FROM FIRESTORE) ---
   const [currentDay, setCurrentDay] = useState(1);
   const [dailyTasks, setDailyTasks] = useState({ ...defaultDailyTasks });
   const [waterIntake, setWaterIntake] = useState(0);
   const [steps, setSteps] = useState(0);
   const [completedDays, setCompletedDays] = useState([]); // Array of completed day numbers
+  const [dailyHistory, setDailyHistory] = useState({}); // Stores historical data for each completed day
 
   // UI states
+  const [authMode, setAuthMode] = useState('signin'); // 'signin' or 'signup'
+  const [authForm, setAuthForm] = useState({ username: '', password: '', confirmPassword: '', email: '' });
   const [showJournal, setShowJournal] = useState(false);
   const [journalMode, setJournalMode] = useState('morning'); // 'morning' or 'evening'
   const [message, setMessage] = useState(null); // For displaying user messages (e.g., errors, success)
   const [messageType, setMessageType] = useState(null); // 'success' or 'error'
+  const [isLoading, setIsLoading] = useState(true); // Overall loading state for data
 
   // Journal prompts
   const morningPrompts = [
@@ -94,20 +158,91 @@ const Hard75Tracker = () => {
     { key: 'water2to3L', label: '2-3L of Water a Day', icon: Droplets },
     { key: 'walk8k', label: 'Walk 8k Steps a Day', icon: Footprints },
     { key: 'eveningJournal', label: '5-Prompt Journal (Evening)', icon: BookOpen },
-    { key: 'noPhoneAfter8', label: 'No Phones After 8 PM', icon: Moon }
+    { key: 'noPhonesAfter8', label: 'No Phones After 8 PM', icon: Moon }
   ];
 
-  // Effect to load user data when currentUser or users object changes (on sign-in or when users data is updated)
+  // Function to get today's date string for Firestore document IDs
+  const getTodayDateString = () => {
+    const today = new Date();
+    const year = today.getFullYear();
+    const month = String(today.getMonth() + 1).padStart(2, '0');
+    const day = String(today.getDate()).padStart(2, '0');
+    return `${year}-${month}-${day}`;
+  };
+
+  // Firestore paths - Wrapped in useCallback to make their references stable
+  // Corrected path: profile_data is a collection, user_profile is a document
+  const getUserProfileDocRef = useCallback((uid) => doc(db, `/artifacts/${appId}/users/${uid}/profile_data/user_profile`), [db, appId]);
+  const getDailyProgressDocRef = useCallback((uid, dateString) => doc(db, `/artifacts/${appId}/users/${uid}/daily_progress/${dateString}`), [db, appId]);
+
+  // Effect to load user data from Firestore when authenticated
   useEffect(() => {
-    if (currentUser && users[currentUser]) {
-      const userData = users[currentUser];
-      setCurrentDay(userData.currentDay || 1);
-      setDailyTasks(userData.dailyTasks || { ...defaultDailyTasks });
-      setWaterIntake(userData.waterIntake || 0);
-      setSteps(userData.steps || 0);
-      setCompletedDays(userData.completedDays || []);
+    if (!isFirebaseReady || !isAuthenticated || !db || !userId) {
+      // If not authenticated or Firebase not ready, ensure states are reset and loading is true
+      setCurrentDay(1);
+      setDailyTasks({ ...defaultDailyTasks });
+      setWaterIntake(0);
+      setSteps(0);
+      setCompletedDays([]);
+      setDailyHistory({});
+      setIsLoading(true);
+      return;
     }
-  }, [currentUser, users]); // Depend on users to reload component states if the global users object changes
+
+    // Set loading to false once data fetching starts for authenticated users
+    setIsLoading(false);
+
+    // eslint-disable-next-line no-unused-vars
+    const unsubscribeProfile = onSnapshot(getUserProfileDocRef(userId), (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        setCurrentDay(data.currentDay || 1);
+        setCompletedDays(data.completedDays || []);
+        setDailyHistory(data.dailyHistory || {}); // Load historical data
+        console.log("Profile data loaded:", data);
+      } else {
+        // If profile doesn't exist, create a default one
+        setDoc(getUserProfileDocRef(userId), {
+          currentDay: 1,
+          completedDays: [],
+          dailyHistory: {},
+          email: userEmail // Store email for reference
+        }, { merge: true })
+        .then(() => console.log("Default profile created."))
+        .catch(e => console.error("Error creating default profile:", e));
+      }
+    }, (error) => {
+      console.error("Error listening to user profile:", error);
+      showMessage(`Error loading profile: ${error.message}`, 'error');
+    });
+
+    // eslint-disable-next-line no-unused-vars
+    const todayDate = getTodayDateString();
+    const unsubscribeDaily = onSnapshot(getDailyProgressDocRef(userId, todayDate), (docSnap) => {
+      if (docSnap.exists()) {
+        const data = docSnap.data();
+        setDailyTasks(data.dailyTasks || { ...defaultDailyTasks });
+        setWaterIntake(data.waterIntake || 0);
+        setSteps(data.steps || 0);
+        console.log("Daily progress loaded:", data);
+      } else {
+        // If daily progress doesn't exist, create a default one
+        setDoc(getDailyProgressDocRef(userId, todayDate), {
+          date: todayDate,
+          dailyTasks: { ...defaultDailyTasks },
+          waterIntake: 0,
+          steps: 0
+        }, { merge: true })
+        .then(() => console.log("Default daily progress created."))
+        .catch(e => console.error("Error creating default daily progress:", e));
+      }
+    }, (error) => {
+      console.error("Error listening to daily progress:", error);
+      showMessage(`Error loading daily progress: ${error.message}`, 'error');
+    });
+
+    // Added getDailyProgressDocRef and getUserProfileDocRef to dependencies
+  }, [isFirebaseReady, isAuthenticated, db, userId, userEmail, appId, getUserProfileDocRef, getDailyProgressDocRef]);
 
   // Function to display a temporary message to the user
   const showMessage = (msg, type) => {
@@ -120,7 +255,7 @@ const Hard75Tracker = () => {
   };
 
   // Handles user sign-up
-  const handleSignUp = () => {
+  const handleSignUp = async () => {
     if (!authForm.username || !authForm.password || !authForm.email) {
       showMessage('Please fill in all fields!', 'error');
       return;
@@ -129,79 +264,98 @@ const Hard75Tracker = () => {
       showMessage('Passwords do not match!', 'error');
       return;
     }
-    if (users[authForm.username]) {
-      showMessage('Username already exists!', 'error');
+    if (!auth) {
+      showMessage('Firebase Auth not initialized.', 'error');
       return;
     }
 
-    const newUser = {
-      email: authForm.email,
-      password: authForm.password,
-      currentDay: 1,
-      dailyTasks: { ...defaultDailyTasks },
-      waterIntake: 0,
-      steps: 0,
-      completedDays: [],
-      dailyHistory: {}
-    };
+    setIsLoading(true);
+    try {
+      const userCredential = await createUserWithEmailAndPassword(auth, authForm.email, authForm.password);
+      const uid = userCredential.user.uid;
 
-    setUsers(prev => ({
-      ...prev,
-      [authForm.username]: newUser
-    }));
+      // Set initial user profile data in Firestore
+      await setDoc(getUserProfileDocRef(uid), {
+        currentDay: 1,
+        completedDays: [],
+        dailyHistory: {},
+        email: authForm.email,
+        username: authForm.username // Store username from form
+      });
 
-    setCurrentUser(authForm.username);
-    setIsAuthenticated(true);
-    setAuthForm({ username: '', password: '', confirmPassword: '', email: '' });
-    showMessage('Account created successfully!', 'success');
+      // Set initial daily progress for today
+      const todayDate = getTodayDateString();
+      await setDoc(getDailyProgressDocRef(uid, todayDate), {
+        date: todayDate,
+        dailyTasks: { ...defaultDailyTasks },
+        waterIntake: 0,
+        steps: 0
+      });
+
+      showMessage('Account created successfully! Please sign in.', 'success');
+      setAuthMode('signin'); // Redirect to sign-in
+      setAuthForm({ username: '', password: '', confirmPassword: '', email: '' });
+    } catch (error) {
+      console.error("Sign up failed:", error);
+      showMessage(`Sign up failed: ${error.message}`, 'error');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
   // Handles user sign-in
-  const handleSignIn = () => {
-    if (!authForm.username || !authForm.password) {
-      showMessage('Please enter username and password!', 'error');
+  const handleSignIn = async () => {
+    if (!authForm.email || !authForm.password) { // Use email for sign-in
+      showMessage('Please enter email and password!', 'error');
+      return;
+    }
+    if (!auth) {
+      showMessage('Firebase Auth not initialized.', 'error');
       return;
     }
 
-    if (users[authForm.username] && users[authForm.username].password === authForm.password) {
-      setCurrentUser(authForm.username);
-      setIsAuthenticated(true);
-      setAuthForm({ username: '', password: '', confirmPassword: '', email: '' });
+    setIsLoading(true);
+    try {
+      await signInWithEmailAndPassword(auth, authForm.email, authForm.password);
       showMessage('Signed in successfully!', 'success');
-    } else {
-      showMessage('Invalid username or password!', 'error');
+      setAuthForm({ username: '', password: '', confirmPassword: '', email: '' });
+    } catch (error) {
+      console.error("Sign in failed:", error);
+      showMessage(`Sign in failed: ${error.message}`, 'error');
+    } finally {
+      setIsLoading(false);
     }
   };
 
   // Handles user sign-out
-  const handleSignOut = () => {
-    setIsAuthenticated(false);
-    setCurrentUser(null);
-    // Reset local states to default when signing out
-    setCurrentDay(1);
-    setDailyTasks({ ...defaultDailyTasks });
-    setWaterIntake(0);
-    setSteps(0);
-    setCompletedDays([]);
-    showMessage('Signed out successfully!', 'success');
+  const handleSignOut = async () => {
+    if (!auth) return;
+    setIsLoading(true);
+    try {
+      await signOut(auth);
+      // States will be reset by useEffect onAuthStateChanged
+      showMessage('Signed out successfully!', 'success');
+    } catch (error) {
+      console.error("Sign out failed:", error);
+      showMessage(`Sign out failed: ${error.message}`, 'error');
+    } finally {
+      setIsLoading(false);
+    }
   };
 
-  // Toggles the completion status of a daily task and updates the global users state
-  const handleTaskToggle = (taskKey) => {
-    setDailyTasks(prev => {
-      const newDailyTasks = { ...prev, [taskKey]: !prev[taskKey] };
-      // Update the users state immediately
-      if (currentUser) {
-        setUsers(prevUsers => ({
-          ...prevUsers,
-          [currentUser]: {
-            ...prevUsers[currentUser],
-            dailyTasks: newDailyTasks
-          }
-        }));
-      }
-      return newDailyTasks; // Return the new state for local update
-    });
+  // Toggles the completion status of a daily task and updates Firestore
+  const handleTaskToggle = async (taskKey) => {
+    if (!db || !userId) return;
+    const todayDate = getTodayDateString();
+    const newDailyTasks = { ...dailyTasks, [taskKey]: !dailyTasks[taskKey] };
+
+    try {
+      await setDoc(getDailyProgressDocRef(userId, todayDate), { dailyTasks: newDailyTasks }, { merge: true });
+      setDailyTasks(newDailyTasks); // Optimistic update
+    } catch (e) {
+      console.error("Error updating daily task:", e);
+      showMessage(`Error updating task: ${e.message}`, 'error');
+    }
   };
 
   // Calculates the percentage of daily tasks completed
@@ -216,29 +370,29 @@ const Hard75Tracker = () => {
     return Object.values(dailyTasks).every(value => value);
   };
 
-  // Resets all daily tasks, water intake, and steps for the current day, and updates users state
-  const resetDay = () => {
-    setDailyTasks({ ...defaultDailyTasks });
-    setWaterIntake(0);
-    setSteps(0);
+  // Resets all daily tasks, water intake, and steps for the current day, and updates Firestore
+  // eslint-disable-next-line no-unused-vars
+  const resetDay = async () => { // Added eslint-disable-next-line
+    if (!db || !userId) return;
+    const todayDate = getTodayDateString();
 
-    // Update the users state directly here
-    if (currentUser) {
-      setUsers(prevUsers => ({
-        ...prevUsers,
-        [currentUser]: {
-          ...prevUsers[currentUser],
-          dailyTasks: { ...defaultDailyTasks },
-          waterIntake: 0,
-          steps: 0
-        }
-      }));
+    try {
+      await setDoc(getDailyProgressDocRef(userId, todayDate), {
+        dailyTasks: { ...defaultDailyTasks },
+        waterIntake: 0,
+        steps: 0
+      });
+      showMessage('Daily progress reset!', 'success');
+    } catch (e) {
+      console.error("Error resetting daily progress:", e);
+      showMessage(`Error resetting progress: ${e.message}`, 'error');
     }
-    showMessage('Daily progress reset!', 'success');
   };
 
-  // Marks the current day as complete and advances to the next day, updating all relevant states
-  const completeDay = () => {
+  // Marks the current day as complete and advances to the next day, updating Firestore
+  const completeDay = async () => {
+    if (!db || !userId) return;
+
     if (isDayComplete()) {
       const newCompletedDays = [...completedDays, currentDay];
       const nextDay = currentDay < 75 ? currentDay + 1 : currentDay;
@@ -251,35 +405,92 @@ const Hard75Tracker = () => {
         date: new Date().toISOString()
       };
 
-      // Update the users state for the completed day's history and the next day's currentDay/completedDays
-      setUsers(prevUsers => ({
-        ...prevUsers,
-        [currentUser]: {
-          ...prevUsers[currentUser],
-          currentDay: nextDay, // Advance currentDay in users object
-          completedDays: newCompletedDays, // Add to completedDays in users object
+      try {
+        // Update user profile with new currentDay, completedDays, and dailyHistory
+        await setDoc(getUserProfileDocRef(userId), {
+          currentDay: nextDay,
+          completedDays: newCompletedDays,
           dailyHistory: {
-            ...(prevUsers[currentUser]?.dailyHistory || {}),
+            ...dailyHistory, // Preserve existing history
             [currentDay]: newDailyHistoryEntry // Add history for the just completed day
           }
-        }
-      }));
+        }, { merge: true });
 
-      // Update local states for immediate UI reflection
-      setCompletedDays(newCompletedDays);
-      if (currentDay < 75) {
+        // Reset today's daily progress document for the new day
+        const todayDate = getTodayDateString();
+        await setDoc(getDailyProgressDocRef(userId, todayDate), {
+          dailyTasks: { ...defaultDailyTasks },
+          waterIntake: 0,
+          steps: 0,
+          date: todayDate // Ensure date is set for the new day's document
+        });
+
+        showMessage(`Day ${currentDay} completed! ${currentDay < 75 ? `Moving to Day ${nextDay}.` : 'Challenge finished!'}`, 'success');
+
+        // Local state updates (will also be triggered by onSnapshot)
         setCurrentDay(nextDay);
+        setCompletedDays(newCompletedDays);
+        setDailyTasks({ ...defaultDailyTasks });
+        setWaterIntake(0);
+        setSteps(0);
+
+      } catch (e) {
+        console.error("Error completing day:", e);
+        showMessage(`Error completing day: ${e.message}`, 'error');
       }
-
-      // Reset the current day's tasks and metrics.
-      // This call to resetDay will also update the 'users' object for dailyTasks, waterIntake, steps.
-      resetDay();
-
-      showMessage(`Day ${currentDay} completed! ${currentDay < 75 ? `Moving to Day ${nextDay}.` : 'Challenge finished!'}`, 'success');
     } else {
       showMessage('Please complete all tasks before completing the day!', 'error');
     }
   };
+
+  // Update water intake in Firestore
+  const handleWaterChange = async (e) => {
+    const newWaterIntake = parseFloat(e.target.value) || 0;
+    setWaterIntake(newWaterIntake); // Optimistic update
+    if (!db || !userId) return;
+    const todayDate = getTodayDateString();
+    try {
+      await setDoc(getDailyProgressDocRef(userId, todayDate), { waterIntake: newWaterIntake }, { merge: true });
+    } catch (e) {
+      console.error("Error updating water intake:", e);
+      showMessage(`Error updating water: ${e.message}`, 'error');
+    }
+  };
+
+  // Update steps in Firestore
+  const handleStepsChange = async (e) => {
+    const newSteps = parseInt(e.target.value) || 0;
+    setSteps(newSteps); // Optimistic update
+    if (!db || !userId) return;
+    const todayDate = getTodayDateString();
+    try {
+      await setDoc(getDailyProgressDocRef(userId, todayDate), { steps: newSteps }, { merge: true });
+    } catch (e) {
+      console.error("Error updating steps:", e);
+      showMessage(`Error updating steps: ${e.message}`, 'error');
+    }
+  };
+
+  // Calculate values for dashboard metrics
+  const totalWater = Object.values(dailyHistory).reduce((total, dayData) => total + (dayData?.waterIntake || 0), 0);
+  const totalSteps = Object.values(dailyHistory).reduce((total, dayData) => total + (dayData?.steps || 0), 0);
+  const totalTasksCompleted = Object.values(dailyHistory).reduce((total, dayData) => {
+    if (!dayData?.dailyTasks) return total;
+    const completed = Object.values(dayData.dailyTasks).filter(Boolean).length;
+    return total + completed;
+  }, 0);
+
+
+  // Show loading overlay if Firebase is not ready or data is being fetched
+  if (!isFirebaseReady || isLoading) {
+    return (
+      <div className="min-h-screen bg-gradient-to-br from-gray-900 via-blue-900 to-purple-900 text-white flex items-center justify-center p-4">
+        <div className="text-center text-xl font-semibold">
+          Loading App...
+        </div>
+      </div>
+    );
+  }
 
   // Render authentication UI if not authenticated
   if (!isAuthenticated) {
@@ -322,17 +533,8 @@ const Hard75Tracker = () => {
               </button>
             </div>
             <div className="space-y-4">
-              <div>
-                <label className="block text-sm font-medium mb-1">Username</label>
-                <input
-                  type="text"
-                  value={authForm.username}
-                  onChange={(e) => setAuthForm(prev => ({ ...prev, username: e.target.value }))}
-                  className="w-full bg-gray-700 rounded px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  placeholder="Enter username"
-                />
-              </div>
-              {authMode === 'signup' && (
+              {/* For sign-in, use email field */}
+              {authMode === 'signin' && (
                 <div>
                   <label className="block text-sm font-medium mb-1">Email</label>
                   <input
@@ -343,6 +545,31 @@ const Hard75Tracker = () => {
                     placeholder="Enter email"
                   />
                 </div>
+              )}
+              {/* For sign-up, use username and email fields */}
+              {authMode === 'signup' && (
+                <>
+                  <div>
+                    <label className="block text-sm font-medium mb-1">Username</label>
+                    <input
+                      type="text"
+                      value={authForm.username}
+                      onChange={(e) => setAuthForm(prev => ({ ...prev, username: e.target.value }))}
+                      className="w-full bg-gray-700 rounded px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder="Enter username"
+                    />
+                  </div>
+                  <div>
+                    <label className="block text-sm font-medium mb-1">Email</label>
+                    <input
+                      type="email"
+                      value={authForm.email}
+                      onChange={(e) => setAuthForm(prev => ({ ...prev, email: e.target.value }))}
+                      className="w-full bg-gray-700 rounded px-3 py-2 text-white focus:outline-none focus:ring-2 focus:ring-blue-500"
+                      placeholder="Enter email"
+                    />
+                  </div>
+                </>
               )}
               <div>
                 <label className="block text-sm font-medium mb-1">Password</label>
@@ -373,14 +600,7 @@ const Hard75Tracker = () => {
                 {authMode === 'signin' ? 'Sign In' : 'Create Account'}
               </button>
             </div>
-            <div className="mt-6 p-4 bg-gray-700 rounded-lg">
-              <h4 className="font-semibold text-yellow-300 mb-2">Demo Users</h4>
-              <p className="text-sm text-gray-300 mb-2">Try these demo accounts:</p>
-              <div className="text-xs text-gray-400">
-                <div>Username: demo1 | Password: demo123</div>
-                <div>Username: demo2 | Password: demo123</div>
-              </div>
-            </div>
+            {/* Removed demo user section as we now have real auth */}
           </div>
         </div>
       </div>
@@ -408,10 +628,10 @@ const Hard75Tracker = () => {
             <div className="text-right">
               <div className="flex items-center gap-2 text-green-300">
                 <User className="w-5 h-5" />
-                <span className="font-semibold">{currentUser}</span>
+                <span className="font-semibold">{userEmail || userId}</span> {/* Display email if available, else UID */}
               </div>
               <div className="text-sm text-gray-400">
-                {users[currentUser]?.email || 'No email'}
+                {userId} {/* Display full UID as required by Canvas instructions */}
               </div>
             </div>
             <button
@@ -455,7 +675,7 @@ const Hard75Tracker = () => {
           </div>
         </div>
 
-        {/* Daily Metrics Overview */}
+        {/* Daily Metrics Overview - Reverted to original structure */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
           <div className="bg-blue-800 rounded-lg p-4 text-center">
             <Droplets className="w-8 h-8 mx-auto mb-2 text-blue-300" />
@@ -478,6 +698,7 @@ const Hard75Tracker = () => {
             <div className="text-sm text-gray-300">Days Remaining</div>
           </div>
         </div>
+
 
         {/* Daily Non-Negotiables List */}
         <div className="bg-gray-800 rounded-lg p-6 mb-6">
@@ -518,19 +739,7 @@ const Hard75Tracker = () => {
               <input
                 type="number"
                 value={waterIntake}
-                onChange={(e) => {
-                  const newWaterIntake = parseFloat(e.target.value) || 0;
-                  setWaterIntake(newWaterIntake);
-                  if (currentUser) {
-                    setUsers(prevUsers => ({
-                      ...prevUsers,
-                      [currentUser]: {
-                        ...prevUsers[currentUser],
-                        waterIntake: newWaterIntake
-                      }
-                    }));
-                  }
-                }}
+                onChange={handleWaterChange}
                 className="flex-1 bg-gray-700 rounded px-3 py-2 text-white"
                 placeholder="Liters"
                 step="0.1"
@@ -547,19 +756,7 @@ const Hard75Tracker = () => {
               <input
                 type="number"
                 value={steps}
-                onChange={(e) => {
-                  const newSteps = parseInt(e.target.value) || 0;
-                  setSteps(newSteps);
-                  if (currentUser) {
-                    setUsers(prevUsers => ({
-                      ...prevUsers,
-                      [currentUser]: {
-                        ...prevUsers[currentUser],
-                        steps: newSteps
-                      }
-                    }));
-                  }
-                }}
+                onChange={handleStepsChange}
                 className="flex-1 bg-gray-700 rounded px-3 py-2 text-white"
                 placeholder="Steps"
               />
@@ -574,6 +771,7 @@ const Hard75Tracker = () => {
             onClick={() => setShowJournal(!showJournal)}
             className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 px-6 py-3 rounded-lg font-semibold transition-all duration-200 transform hover:scale-105"
           >
+            {/* Reverted to BookOpen Lucide icon */}
             <BookOpen className="w-5 h-5 inline mr-2" />
             {showJournal ? 'Close Journal' : 'View Journal Prompts'}
           </button>
@@ -664,61 +862,27 @@ const Hard75Tracker = () => {
 
             <div className="bg-gradient-to-r from-blue-600 to-blue-700 rounded-lg p-4 text-center">
               <div className="text-2xl font-bold">
-                {(() => {
-                  const totalWater = users[currentUser]?.completedDays?.reduce((total, day) => {
-                    const dayData = users[currentUser]?.dailyHistory?.[day];
-                    return total + (dayData?.waterIntake || 0);
-                  }, 0) || 0;
-                  return totalWater.toFixed(1);
-                })()}L
+                {totalWater.toFixed(1)}L
               </div>
               <div className="text-sm text-blue-100">Total Water</div>
               <div className="text-xs text-blue-200 mt-1">
-                Avg: {(() => {
-                  if (completedDays.length === 0) return '0.0';
-                  const totalWater = users[currentUser]?.completedDays?.reduce((total, day) => {
-                    const dayData = users[currentUser]?.dailyHistory?.[day];
-                    return total + (dayData?.waterIntake || 0);
-                  }, 0) || 0;
-                  return (totalWater / completedDays.length).toFixed(1);
-                })()}L per day
+                Avg: {completedDays.length === 0 ? '0.0' : (totalWater / completedDays.length).toFixed(1)}L per day
               </div>
             </div>
 
             <div className="bg-gradient-to-r from-purple-600 to-purple-700 rounded-lg p-4 text-center">
               <div className="text-2xl font-bold">
-                {(() => {
-                  const totalSteps = users[currentUser]?.completedDays?.reduce((total, day) => {
-                    const dayData = users[currentUser]?.dailyHistory?.[day];
-                    return total + (dayData?.steps || 0);
-                  }, 0) || 0;
-                  return totalSteps.toLocaleString();
-                })()}
+                {totalSteps.toLocaleString()}
               </div>
               <div className="text-sm text-purple-100">Total Steps</div>
               <div className="text-xs text-purple-200 mt-1">
-                Avg: {(() => {
-                  if (completedDays.length === 0) return '0';
-                  const totalSteps = users[currentUser]?.completedDays?.reduce((total, day) => {
-                    const dayData = users[currentUser]?.dailyHistory?.[day];
-                    return total + (dayData?.steps || 0);
-                  }, 0) || 0;
-                  return Math.round(totalSteps / completedDays.length).toLocaleString();
-                })()} per day
+                Avg: {completedDays.length === 0 ? '0' : Math.round(totalSteps / completedDays.length).toLocaleString()} per day
               </div>
             </div>
 
             <div className="bg-gradient-to-r from-orange-600 to-orange-700 rounded-lg p-4 text-center">
               <div className="text-2xl font-bold">
-                {(() => {
-                  const totalTasks = users[currentUser]?.completedDays?.reduce((total, day) => {
-                    const dayData = users[currentUser]?.dailyHistory?.[day];
-                    if (!dayData?.dailyTasks) return total;
-                    const completed = Object.values(dayData.dailyTasks).filter(Boolean).length;
-                    return total + completed;
-                  }, 0) || 0;
-                  return totalTasks;
-                })()}
+                {totalTasksCompleted}
               </div>
               <div className="text-sm text-orange-100">Tasks Completed</div>
               <div className="text-xs text-orange-200 mt-1">
