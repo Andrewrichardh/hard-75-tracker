@@ -4,7 +4,7 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import { Calendar, Clock, Droplets, Target, BookOpen, Footprints, Moon, Sun, CheckCircle2, Circle, TrendingUp, User, LogOut, UserPlus, LogIn } from 'lucide-react';
 
 // Firebase Imports
-import { initializeApp } from 'firebase/app'; // Corrected syntax: changed '=>' to 'from'
+import { initializeApp } from 'firebase/app';
 import { getAuth, signInWithEmailAndPassword, createUserWithEmailAndPassword, signOut, onAuthStateChanged, signInAnonymously, signInWithCustomToken } from 'firebase/auth';
 import { getFirestore, doc, setDoc, onSnapshot } from 'firebase/firestore';
 import { getAnalytics } from "firebase/analytics";
@@ -69,14 +69,13 @@ const Hard75Tracker = () => {
       const signInInitialUser = async () => {
         try {
           // If a custom token is provided (typically in Canvas environment), try to use it.
+          // Otherwise, proceed directly to anonymous sign-in.
           if (initialAuthToken) {
             await signInWithCustomToken(authInstance, initialAuthToken);
             console.log("Signed in with custom token.");
-          }
-          // If no custom token was provided OR custom token sign-in failed,
-          // and no user is currently authenticated (e.g., from a persistent session),
-          // attempt anonymous sign-in as a general fallback for web clients.
-          if (!authInstance.currentUser) {
+          } else {
+            // If no custom token, or if previous sign-in failed, attempt anonymous sign-in.
+            // This is the primary path for local development.
             await signInAnonymously(authInstance);
             console.log("Signed in anonymously.");
           }
@@ -117,8 +116,8 @@ const Hard75Tracker = () => {
   // --- APP STATE (LOADED FROM FIRESTORE) ---
   const [currentDay, setCurrentDay] = useState(1);
   const [dailyTasks, setDailyTasks] = useState({ ...defaultDailyTasks });
-  const [waterIntake, setWaterIntake] = useState(0);
-  const [steps, setSteps] = useState(0);
+  const [waterIntake, setWaterIntake] = useState(0); // waterIntake state variable
+  const [steps, setSteps] = useState(0); // steps state variable
   const [completedDays, setCompletedDays] = useState([]); // Array of completed day numbers
   const [dailyHistory, setDailyHistory] = useState({}); // Stores historical data for each completed day
 
@@ -130,6 +129,8 @@ const Hard75Tracker = () => {
   const [message, setMessage] = useState(null); // For displaying user messages (e.g., errors, success)
   const [messageType, setMessageType] = useState(null); // 'success' or 'error'
   const [isLoading, setIsLoading] = useState(true); // Overall loading state for data
+  // eslint-disable-next-line no-unused-vars
+  const [showResetConfirm, setShowResetConfirm] = useState(false); // State for reset confirmation modal - added eslint-disable-next-line
 
   // Journal prompts
   const morningPrompts = [
@@ -158,7 +159,7 @@ const Hard75Tracker = () => {
     { key: 'water2to3L', label: '2-3L of Water a Day', icon: Droplets },
     { key: 'walk8k', label: 'Walk 8k Steps a Day', icon: Footprints },
     { key: 'eveningJournal', label: '5-Prompt Journal (Evening)', icon: BookOpen },
-    { key: 'noPhonesAfter8', label: 'No Phones After 8 PM', icon: Moon }
+    { key: 'noPhoneAfter8', label: 'No Phones After 8 PM', icon: Moon }
   ];
 
   // Function to get today's date string for Firestore document IDs
@@ -171,7 +172,6 @@ const Hard75Tracker = () => {
   };
 
   // Firestore paths - Wrapped in useCallback to make their references stable
-  // Corrected path: profile_data is a collection, user_profile is a document
   const getUserProfileDocRef = useCallback((uid) => doc(db, `/artifacts/${appId}/users/${uid}/profile_data/user_profile`), [db, appId]);
   const getDailyProgressDocRef = useCallback((uid, dateString) => doc(db, `/artifacts/${appId}/users/${uid}/daily_progress/${dateString}`), [db, appId]);
 
@@ -181,8 +181,8 @@ const Hard75Tracker = () => {
       // If not authenticated or Firebase not ready, ensure states are reset and loading is true
       setCurrentDay(1);
       setDailyTasks({ ...defaultDailyTasks });
-      setWaterIntake(0);
-      setSteps(0);
+      setWaterIntake(0); // Reset water/steps on auth change
+      setSteps(0);       // Reset water/steps on auth change
       setCompletedDays([]);
       setDailyHistory({});
       setIsLoading(true);
@@ -209,40 +209,64 @@ const Hard75Tracker = () => {
           email: userEmail // Store email for reference
         }, { merge: true })
         .then(() => console.log("Default profile created."))
-        .catch(e => console.error("Error creating default profile:", e));
+        .catch(error => console.error("Error creating default profile:", error));
       }
     }, (error) => {
       console.error("Error listening to user profile:", error);
       showMessage(`Error loading profile: ${error.message}`, 'error');
     });
 
-    // eslint-disable-next-line no-unused-vars
+    // This listener now correctly updates all daily data including water/steps
     const todayDate = getTodayDateString();
+    // eslint-disable-next-line no-unused-vars
     const unsubscribeDaily = onSnapshot(getDailyProgressDocRef(userId, todayDate), (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
         setDailyTasks(data.dailyTasks || { ...defaultDailyTasks });
-        setWaterIntake(data.waterIntake || 0);
-        setSteps(data.steps || 0);
+        setWaterIntake(data.waterIntake || 0); // Always update waterIntake from Firestore
+        setSteps(data.steps || 0);             // Always update steps from Firestore
         console.log("Daily progress loaded:", data);
       } else {
         // If daily progress doesn't exist, create a default one
         setDoc(getDailyProgressDocRef(userId, todayDate), {
           date: todayDate,
           dailyTasks: { ...defaultDailyTasks },
-          waterIntake: 0,
-          steps: 0
+          waterIntake: 0, // Still initialize in Firestore for historical data consistency
+          steps: 0        // Still initialize in Firestore for historical data consistency
         }, { merge: true })
         .then(() => console.log("Default daily progress created."))
-        .catch(e => console.error("Error creating default daily progress:", e));
+        .catch(error => console.error("Error creating default daily progress:", error));
       }
     }, (error) => {
       console.error("Error listening to daily progress:", error);
       showMessage(`Error loading daily progress: ${error.message}`, 'error');
     });
 
-    // Added getDailyProgressDocRef and getUserProfileDocRef to dependencies
+    // Removed waterIntake and steps from this useEffect's dependency array
   }, [isFirebaseReady, isAuthenticated, db, userId, userEmail, appId, getUserProfileDocRef, getDailyProgressDocRef]);
+
+  // Effect to persist waterIntake and steps to Firestore whenever they change
+  useEffect(() => {
+    if (!db || !userId || !isAuthenticated) return; // Only save if authenticated and Firebase is ready
+    const todayDate = getTodayDateString();
+    const docRef = getDailyProgressDocRef(userId, todayDate);
+
+    // Use a timeout to debounce writes, preventing too many rapid Firestore updates
+    const handler = setTimeout(async () => {
+      try {
+        await setDoc(docRef, { waterIntake: waterIntake, steps: steps }, { merge: true });
+        console.log("Water/Steps saved to Firestore:", waterIntake, steps);
+      } catch (error) {
+        console.error("Error saving water/steps to Firestore:", error);
+        showMessage(`Error saving water/steps: ${error.message}`, 'error');
+      }
+    }, 500); // Debounce by 500ms
+
+    return () => {
+      clearTimeout(handler); // Cleanup timeout on unmount or re-render
+    };
+  }, [waterIntake, steps, db, userId, isAuthenticated, getDailyProgressDocRef]); // Dependencies for this effect
+
 
   // Function to display a temporary message to the user
   const showMessage = (msg, type) => {
@@ -352,9 +376,9 @@ const Hard75Tracker = () => {
     try {
       await setDoc(getDailyProgressDocRef(userId, todayDate), { dailyTasks: newDailyTasks }, { merge: true });
       setDailyTasks(newDailyTasks); // Optimistic update
-    } catch (e) {
-      console.error("Error updating daily task:", e);
-      showMessage(`Error updating task: ${e.message}`, 'error');
+    } catch (error) {
+      console.error("Error updating daily task:", error);
+      showMessage(`Error updating task: ${error.message}`, 'error');
     }
   };
 
@@ -365,14 +389,20 @@ const Hard75Tracker = () => {
     return totalTasks === 0 ? 0 : Math.round((completedTasks / totalTasks) * 100);
   };
 
-  // Checks if all daily tasks are completed
+  // Checks if all daily tasks are completed (now only based on non-negotiable checkboxes)
   const isDayComplete = () => {
-    return Object.values(dailyTasks).every(value => value);
+    const allTasksChecked = Object.values(dailyTasks).every(value => value);
+
+    console.log("--- isDayComplete Debug ---");
+    console.log("All daily tasks checked:", allTasksChecked);
+    console.log("Overall Day Complete:", allTasksChecked); // Simplified
+    console.log("-------------------------");
+
+    return allTasksChecked; // Only check if all daily tasks are true
   };
 
   // Resets all daily tasks, water intake, and steps for the current day, and updates Firestore
-  // eslint-disable-next-line no-unused-vars
-  const resetDay = async () => { // Added eslint-disable-next-line
+  const resetDay = async () => {
     if (!db || !userId) return;
     const todayDate = getTodayDateString();
 
@@ -381,11 +411,59 @@ const Hard75Tracker = () => {
         dailyTasks: { ...defaultDailyTasks },
         waterIntake: 0,
         steps: 0
-      });
+      }, { merge: true }); // Use merge: true to avoid overwriting other fields if they exist
       showMessage('Daily progress reset!', 'success');
-    } catch (e) {
-      console.error("Error resetting daily progress:", e);
-      showMessage(`Error resetting progress: ${e.message}`, 'error');
+      // Reset local state for current day immediately
+      setDailyTasks({ ...defaultDailyTasks });
+      setWaterIntake(0);
+      setSteps(0);
+    } catch (error) {
+      console.error("Error resetting daily progress:", error);
+      showMessage(`Error resetting progress: ${error.message}`, 'error');
+    }
+  };
+
+  // Function to reset the entire challenge (all user data)
+  const resetChallenge = async () => {
+    if (!db || !userId) return;
+
+    // Confirm with the user before proceeding
+    const confirmed = window.confirm("Are you sure you want to reset the entire challenge? This will delete all your progress!");
+    if (!confirmed) {
+      return;
+    }
+
+    setIsLoading(true);
+    try {
+      // Reset user profile data in Firestore
+      await setDoc(getUserProfileDocRef(userId), {
+        currentDay: 1,
+        completedDays: [],
+        dailyHistory: {},
+        email: userEmail // Keep email for re-authentication
+      }, { merge: true }); // Use merge: true to avoid overwriting other fields if they exist
+
+      // Optionally, you might want to delete all daily_progress documents for this user
+      // This requires fetching all documents in the subcollection and deleting them.
+      // For simplicity here, we're just resetting the profile and current day.
+      // If you need to delete all daily_progress docs, it would involve a query and batch delete.
+
+      // Reset today's daily progress document for the new Day 1
+      const todayDate = getTodayDateString();
+      await setDoc(getDailyProgressDocRef(userId, todayDate), {
+        date: todayDate,
+        dailyTasks: { ...defaultDailyTasks },
+        waterIntake: 0,
+        steps: 0
+      }, { merge: true });
+
+      showMessage('Challenge reset successfully! Signing out...', 'success');
+      await signOut(auth); // Sign out to force app to reload initial state
+    } catch (error) {
+      console.error("Error resetting challenge:", error);
+      showMessage(`Error resetting challenge: ${error.message}`, 'error');
+    } finally {
+      setIsLoading(false);
     }
   };
 
@@ -400,8 +478,8 @@ const Hard75Tracker = () => {
       // Prepare the daily history entry for the day just completed
       const newDailyHistoryEntry = {
         dailyTasks: { ...dailyTasks }, // Deep copy current daily tasks
-        waterIntake,
-        steps,
+        waterIntake: waterIntake, // Include waterIntake from state
+        steps: steps,        // Include steps from state
         date: new Date().toISOString()
       };
 
@@ -420,10 +498,10 @@ const Hard75Tracker = () => {
         const todayDate = getTodayDateString();
         await setDoc(getDailyProgressDocRef(userId, todayDate), {
           dailyTasks: { ...defaultDailyTasks },
-          waterIntake: 0,
-          steps: 0,
+          waterIntake: 0, // Still initialize in Firestore for historical data consistency
+          steps: 0,        // Still initialize in Firestore for historical data consistency
           date: todayDate // Ensure date is set for the new day's document
-        });
+        }, { merge: true }); // Use merge: true to avoid overwriting other fields if they exist
 
         showMessage(`Day ${currentDay} completed! ${currentDay < 75 ? `Moving to Day ${nextDay}.` : 'Challenge finished!'}`, 'success');
 
@@ -431,47 +509,31 @@ const Hard75Tracker = () => {
         setCurrentDay(nextDay);
         setCompletedDays(newCompletedDays);
         setDailyTasks({ ...defaultDailyTasks });
-        setWaterIntake(0);
-        setSteps(0);
+        setWaterIntake(0); // Reset local water/steps state for new day
+        setSteps(0);       // Reset local water/steps state for new day
 
-      } catch (e) {
-        console.error("Error completing day:", e);
-        showMessage(`Error completing day: ${e.message}`, 'error');
+      } catch (error) {
+        console.error("Error completing day:", error);
+        showMessage(`Error completing day: ${error.message}`, 'error');
       }
     } else {
       showMessage('Please complete all tasks before completing the day!', 'error');
     }
   };
 
-  // Update water intake in Firestore
-  const handleWaterChange = async (e) => {
+  // Update water intake in Firestore (now only updates local state)
+  const handleWaterChange = (e) => {
     const newWaterIntake = parseFloat(e.target.value) || 0;
-    setWaterIntake(newWaterIntake); // Optimistic update
-    if (!db || !userId) return;
-    const todayDate = getTodayDateString();
-    try {
-      await setDoc(getDailyProgressDocRef(userId, todayDate), { waterIntake: newWaterIntake }, { merge: true });
-    } catch (e) {
-      console.error("Error updating water intake:", e);
-      showMessage(`Error updating water: ${e.message}`, 'error');
-    }
+    setWaterIntake(newWaterIntake);
   };
 
-  // Update steps in Firestore
-  const handleStepsChange = async (e) => {
+  // Update steps in Firestore (now only updates local state)
+  const handleStepsChange = (e) => {
     const newSteps = parseInt(e.target.value) || 0;
-    setSteps(newSteps); // Optimistic update
-    if (!db || !userId) return;
-    const todayDate = getTodayDateString();
-    try {
-      await setDoc(getDailyProgressDocRef(userId, todayDate), { steps: newSteps }, { merge: true });
-    } catch (e) {
-      console.error("Error updating steps:", e);
-      showMessage(`Error updating steps: ${e.message}`, 'error');
-    }
+    setSteps(newSteps);
   };
 
-  // Calculate values for dashboard metrics
+  // Calculate values for dashboard metrics (now only from dailyHistory, not current day inputs)
   const totalWater = Object.values(dailyHistory).reduce((total, dayData) => total + (dayData?.waterIntake || 0), 0);
   const totalSteps = Object.values(dailyHistory).reduce((total, dayData) => total + (dayData?.steps || 0), 0);
   const totalTasksCompleted = Object.values(dailyHistory).reduce((total, dayData) => {
@@ -675,17 +737,19 @@ const Hard75Tracker = () => {
           </div>
         </div>
 
-        {/* Daily Metrics Overview - Reverted to original structure */}
+        {/* Daily Metrics Overview - Removed Water/Steps Inputs */}
         <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
           <div className="bg-blue-800 rounded-lg p-4 text-center">
             <Droplets className="w-8 h-8 mx-auto mb-2 text-blue-300" />
-            <div className="text-2xl font-bold">{waterIntake}L</div>
-            <div className="text-sm text-gray-300">Water Today</div>
+            {/* Display total water from history, not current day input */}
+            <div className="text-2xl font-bold">{totalWater.toFixed(1)}L</div>
+            <div className="text-sm text-gray-300">Total Water</div>
           </div>
           <div className="bg-green-800 rounded-lg p-4 text-center">
             <Footprints className="w-8 h-8 mx-auto mb-2 text-green-300" />
-            <div className="text-2xl font-bold">{steps.toLocaleString()}</div>
-            <div className="text-sm text-gray-300">Steps Today</div>
+            {/* Display total steps from history, not current day input */}
+            <div className="text-2xl font-bold">{totalSteps.toLocaleString()}</div>
+            <div className="text-sm text-gray-300">Total Steps</div>
           </div>
           <div className="bg-purple-800 rounded-lg p-4 text-center">
             <Calendar className="w-8 h-8 mx-auto mb-2 text-purple-300" />
@@ -698,7 +762,6 @@ const Hard75Tracker = () => {
             <div className="text-sm text-gray-300">Days Remaining</div>
           </div>
         </div>
-
 
         {/* Daily Non-Negotiables List */}
         <div className="bg-gray-800 rounded-lg p-6 mb-6">
@@ -728,7 +791,7 @@ const Hard75Tracker = () => {
           </div>
         </div>
 
-        {/* Water Intake and Steps Input */}
+        {/* Water Intake and Steps Input fields */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-6">
           <div className="bg-gray-800 rounded-lg p-4">
             <h3 className="font-semibold mb-2 flex items-center gap-2">
@@ -738,7 +801,7 @@ const Hard75Tracker = () => {
             <div className="flex gap-2">
               <input
                 type="number"
-                value={waterIntake}
+                value={waterIntake === 0 ? '' : waterIntake} // Display empty string if 0
                 onChange={handleWaterChange}
                 className="flex-1 bg-gray-700 rounded px-3 py-2 text-white"
                 placeholder="Liters"
@@ -755,7 +818,7 @@ const Hard75Tracker = () => {
             <div className="flex gap-2">
               <input
                 type="number"
-                value={steps}
+                value={steps === 0 ? '' : steps} // Display empty string if 0
                 onChange={handleStepsChange}
                 className="flex-1 bg-gray-700 rounded px-3 py-2 text-white"
                 placeholder="Steps"
@@ -765,13 +828,13 @@ const Hard75Tracker = () => {
           </div>
         </div>
 
+
         {/* Journal Prompts Section */}
         <div className="text-center mb-6">
           <button
             onClick={() => setShowJournal(!showJournal)}
             className="bg-gradient-to-r from-purple-600 to-blue-600 hover:from-purple-700 hover:to-blue-700 px-6 py-3 rounded-lg font-semibold transition-all duration-200 transform hover:scale-105"
           >
-            {/* Reverted to BookOpen Lucide icon */}
             <BookOpen className="w-5 h-5 inline mr-2" />
             {showJournal ? 'Close Journal' : 'View Journal Prompts'}
           </button>
@@ -844,6 +907,22 @@ const Hard75Tracker = () => {
           </button>
         </div>
 
+        {/* Reset Buttons */}
+        <div className="flex flex-col sm:flex-row justify-center gap-4 mt-6">
+            <button
+                onClick={resetDay}
+                className="button-secondary bg-red-500 hover:bg-red-600 text-white px-6 py-3 rounded-lg font-semibold transition-all duration-200 transform hover:scale-105"
+            >
+                Reset Daily Progress
+            </button>
+            <button
+                onClick={resetChallenge}
+                className="button-secondary bg-purple-500 hover:bg-purple-600 text-white px-6 py-3 rounded-lg font-semibold transition-all duration-200 transform hover:scale-105"
+            >
+                Reset Entire Challenge
+            </button>
+        </div>
+
         {/* Global Overview Section */}
         <div className="bg-gray-800 rounded-lg p-6 mb-6">
           <h2 className="text-xl font-semibold mb-4 flex items-center gap-2">
@@ -862,21 +941,23 @@ const Hard75Tracker = () => {
 
             <div className="bg-gradient-to-r from-blue-600 to-blue-700 rounded-lg p-4 text-center">
               <div className="text-2xl font-bold">
-                {totalWater.toFixed(1)}L
+                {/* Display total water from history */}
+                {Object.values(dailyHistory).reduce((total, dayData) => total + (dayData?.waterIntake || 0), 0).toFixed(1)}L
               </div>
               <div className="text-sm text-blue-100">Total Water</div>
               <div className="text-xs text-blue-200 mt-1">
-                Avg: {completedDays.length === 0 ? '0.0' : (totalWater / completedDays.length).toFixed(1)}L per day
+                Avg: {completedDays.length === 0 ? '0.0' : (Object.values(dailyHistory).reduce((total, dayData) => total + (dayData?.waterIntake || 0), 0) / completedDays.length).toFixed(1)}L per day
               </div>
             </div>
 
             <div className="bg-gradient-to-r from-purple-600 to-purple-700 rounded-lg p-4 text-center">
               <div className="text-2xl font-bold">
-                {totalSteps.toLocaleString()}
+                {/* Display total steps from history */}
+                {Object.values(dailyHistory).reduce((total, dayData) => total + (dayData?.steps || 0), 0).toLocaleString()}
               </div>
               <div className="text-sm text-purple-100">Total Steps</div>
               <div className="text-xs text-purple-200 mt-1">
-                Avg: {completedDays.length === 0 ? '0' : Math.round(totalSteps / completedDays.length).toLocaleString()} per day
+                Avg: {completedDays.length === 0 ? '0' : Math.round(Object.values(dailyHistory).reduce((total, dayData) => total + (dayData?.steps || 0), 0) / completedDays.length).toLocaleString()} per day
               </div>
             </div>
 
